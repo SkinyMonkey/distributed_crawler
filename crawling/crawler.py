@@ -1,48 +1,63 @@
 #!/usr/bin/env python
 
+import json
 from BeautifulSoup import BeautifulSoup
 from urlparse import urlparse, urljoin
 from urllib2 import urlopen
-from robotparser import RobotFileParser
 
 class Crawler(object):
-      def __init__(self):
-	  self.results = []
-	  self.link_nbr = 0
+      def __init__(self, amqp):
 	  self.__target = None
-	  self.__robot_parser = RobotFileParser()
-	  # FIXME : add two sending channels
-	  # crawling
-	  # database
+	  self.__amqp = amqp
 
-      def __call__(self, urls, to_get, max_depth = 1):
+      def __call__(self, job_id, urls, tag, max_depth = 1):
 	  """
 	  Process the url list to crawl their content.
 	  """
 	  self.__crawl_queue = list(urls)
+	  self.__tag = tag
+	  self.__job_id = job_id
+
+	  # BFS (kind of)
 	  for url in self.__crawl_queue:
+	    self.__max_depth = max_depth
+
 	    if url.startswith('#')\
 	      or url.startswith('mailto:'):
 	      continue
-	    print 'visit : %s' % url
+  
+	    # declare a new url to the database, use to have an updated progress
+	    self.__amqp.send('database', json.dumps({'request' : 'new_url',
+						     'job_id' : job_id,
+						     'url' : url}))
+
 	    self.__target = urlparse(url)
-	    self.__robot_parser.set_url(url + '/robots.txt')
-	    self.__robot_parser.read()
 	    try:
 	      answer = urlopen(url)
 	    except Exception as url_exception:
 	      print str(url_exception) + " (%s)" % url
 	      continue
-	    self.link_nbr += 1
+  
 	    html_content = answer.read()
+	    
+	    # Analysis by beautifulSoup.
 	    self.__soup = BeautifulSoup(html_content)
-	    self.__get_attributes_content(to_get, ('href', 'src'),\
-					  self.results.append)
+
+	    # Extract the tags attribute 'href', 'src'
+	    self.__get_attributes_content(tag, ('href', 'src'),\
+					  self.__new_ressource)
 	    if max_depth > 0:
+	      self.__max_depth -= 1
+	      # Extract the links
 	      self.__get_attributes_content('a', ('href', 'src'),\
-					    self.__crawl_queue.append)
-	      max_depth -= 1
+					    self.__send_url)
 	    answer.close()
+	    
+	    # declare the end of the url crawling to the database,
+	    # use to have an updated progress
+	    self.__amqp.send('database', json.dumps({'request' : 'end_url',
+						     'job_id' : job_id,
+						     'url' : url}))
 
       def __get_attributes_content(self, tag, attributes, to_apply):
 	  """
@@ -54,8 +69,20 @@ class Crawler(object):
 	    for attribute in attributes:
 	      if link.has_key(attribute):
 		final_link = self.__real_link(link.get(attribute))
-		if self.__robot_parser.can_fetch("*", final_link):
-		  to_apply(final_link)
+		to_apply(final_link)
+
+      def __new_ressource(self, link):
+	  self.__amqp.send('database', json.dumps({'request' : 'new_ressource',
+						 'tag' : self.__tag,
+						 'url' : link,
+						 'job_id' : self.__job_id}))
+ 
+      def __send_url(self, link):
+	  self.__amqp.send('crawling', json.dumps({'job_id' : self.__job_id,
+						   'urls' : [link],
+						   'tag' : 'img',
+						   'max_depth' :
+						   self.__max_depth}))
 
       def __real_link(self, link):
 	  """
@@ -72,13 +99,3 @@ class Crawler(object):
 	  else:
 	    link = urljoin(self.__target.geturl(),link)
 	  return link
-
-if __name__ == '__main__':
-   from pprint import pprint
-   from sys import argv
-
-   c = Crawler()
-   c(argv[1:], 'img', 0)
-   print ("-" * 80)
-   pprint(c.results)
-   print c.link_nbr

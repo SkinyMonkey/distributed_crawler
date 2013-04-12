@@ -1,0 +1,8 @@
+www:
+  type: python
+
+mqserver:
+  type: rabbitmq
+
+data:
+  type: mongodb

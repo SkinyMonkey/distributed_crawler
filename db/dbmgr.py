@@ -1,81 +1,91 @@
 #!/usr/bin/env python
 
+import json
 from pymongo import MongoClient
+from bson import ObjectId
 
 class DbMgr(object):
-      def __init__(self, hostname, port):
-	  self._id = 0
-	  self.db = {}
+      def __init__(self):
+	  with open('/home/dotcloud/environment.json') as f:
+	    env = json.load(f)
+	  
+	  # Connect to the Database
+	  self.__connection = MongoClient('mongodb://%s:%s@%s:%s'%
+					  (str(env['DOTCLOUD_DATA_MONGODB_LOGIN'])
+					  ,str(env['DOTCLOUD_DATA_MONGODB_PASSWORD'])
+					  ,str(env['DOTCLOUD_DATA_MONGODB_HOST'])
+					  ,int(env['DOTCLOUD_DATA_MONGODB_PORT'])))
+	  # The collection will be called crawling.
+	  self.__db = self.__connection.crawling
+	  # The collection will be called jobs.
+	  self.__jobs = self.__db.jobs
+
+      def __del__(self):
+	  self.__connection.close()
 
       def new_job(self, request):
 	  """
 	  Insert a new job entry into the db.
 	  """
-	  self._id += 1
-	  self.db[self._id] = {}
-	  return json.dumps({'job_id' : self._id})
+	  nid = self.__jobs.find().count()
+	  _id = self.__jobs.insert({'progress' : 0,
+				    'completed' : 0,
+				    'result' : [],
+				    'nid': unicode(nid)})
+	  return {'job_id' : unicode(nid)}
 
       def new_url(self, request):
 	  """
 	  Increment the url count for the designated job.
 	  """
-	  request = json.loads(request)
 	  print 'New url : %s for job #%s' % (request['url'], request['job_id'])
-	  if not self.db[request]['job_id'].has_key('progress'):
-	    self.db[request['job_id']]['progress'] = 0
-	    return # the count will fall to -1 when all url will be consumed
-	  self.db[request['job_id']]['progress'] += 1
+	  self.__jobs.update({ 'nid' :  request['job_id']},\
+	  		     { '$inc': { 'progress' : 1 } } )
 
-      def end_url(self):
+      def end_url(self, request):
 	  """
-	  Decrement the url count for the designated job.
+	  Decrement the count of in progress url for the designated job.
+	  Increment the count of completed url for the designated job.
 	  """
-	  request = json.loads(request)
 	  print 'End url : %s for job #%s' % (request['url'], request['job_id'])
-	  self.db[request['job_id']]['progress'] -= 1
-	  if not self.db[request]['job_id'].has_key('completed'):
-	    self.db[request['job_id']]['completed'] = 0
-	  self.db[request['job_id']]['completed'] += 1
+	  self.__jobs.update({ 'nid' :  request['job_id']},\
+	  		     { '$inc': { 'progress': -1 } })
+
+	  self.__jobs.update({ 'nid' :  request['job_id']},\
+	  		     { '$inc': { 'completed': 1 } })
 
       def new_ressource(self, request):
           """
 	  Add a ressource to the current job document.
 	  """
-	  request = json.loads(request)
-	  if not self.db[request]['job_id'].has_key('result'):
-	    self.db[request['job_id']]['result'] = []
-	  self.db[request['job_id']]['result'].append(\
-	      {
-		'tag' : request['tag'],
-		'url' : request['url']
-	      })
-	  return json.dumps({})
+	  print 'Ressource [%s] for job [%s]' % (request['url'], request['job_id'])
+	  self.__jobs.update({ 'nid' :  request['job_id']},\
+			     { '$push':  { 'result' : {'tag' : request['tag'],
+						       'url' : request['url']}}})
 
       def status(self, request):
-	  request = json_loads(request)
 	  try:
-	    if self.db[request['job_id']]['progress'] == -1:
-	      return json.dumps(
+	    state = self.__jobs.find_one({'nid' : request['job_id']})
+	    if state['progress'] == 0:
+	      return
 	      {
 		'status' : 'over',\
-		'completed' : self.db[request['job_id']]['completed']
-	      })
-	    return json.dumps(
+		'completed' : state['completed']
+	      }
+	    return\
 	      {
 		'status' : 'in progress',\
-		'completed' : self.db[request['job_id']]['completed'],\
-		'inprogress' : self.db[request['job_id']]['progress'],\
-	      })
+		'completed' : state['completed'],\
+		'inprogress' : state['progress'],\
+	      }
 	  except:
-	    return json.dumps({'error'  : 'this job id doesn\'t exist',
-			       'job_id' : request['job_id']})
+	    return {'error'  : 'this job id doesn\'t exist',
+		    'job_id' : request['job_id']}
 
       def result(self, request):
-	  # FIXME : Or it can be a json object with the list URL associated with
-	  # the domain crawled, anyway works, no specific requirement here.
-	  request = json_loads(request)
 	  try:
-	    return json.dumps({'result' : self.db[request['job_id']]['result']})
+	    state = self.__jobs.find_one({'nid' : request['job_id']})
+	    return {'result' : state['result']}
 	  except:
-	    return json.dumps({'error'  : 'this job id doesn\'t exist',
-			       'job_id' : request['job_id']})
+	    return {'error'  : 'this job id doesn\'t exist',
+		    'job_id' : request['job_id']}

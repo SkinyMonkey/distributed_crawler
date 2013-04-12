@@ -1,30 +1,48 @@
 #!/usr/bin/env python
 
+import json
 from pika import *
 
 class Amqp(object):
-      def __init__(self, callback, queue_name = '', netloc = 'localhost'):
-	  self.__connection = BlockingConnection(ConnectionParameters(netloc))
-	  channel = self.__connection.channel()
-	  channel.queue_declare(queue = queue_name)
-	  channel.basic_consume(callback,
-		                queue = queue_name)
-	  channel.start_consuming()
+      def __init__(self, read_on, write_on):
+	  # Get the environnment.
+	  with open('/home/dotcloud/environment.json') as f:
+	    env = json.load(f)
+	  # Establish connection with the MQ server
+	  self.__connection =\
+	      BlockingConnection(\
+	      ConnectionParameters(str(env['DOTCLOUD_MQSERVER_AMQP_HOST']),
+				   int(env['DOTCLOUD_MQSERVER_AMQP_PORT']),
+				   credentials = PlainCredentials(
+				     str(env['DOTCLOUD_MQSERVER_AMQP_LOGIN']),
+				     str(env['DOTCLOUD_MQSERVER_AMQP_PASSWORD']))))
+	  self.__channel = self.__connection.channel()
+	  self.__read_on = read_on
+
+	  # Declare the queue on which the object will read.
+	  self.__channel.queue_declare(queue = read_on)
+
+	  # Declare the queues on which the object will write.
+	  for queue in write_on:
+	    self.__channel.queue_declare(queue = queue)
+	  print('Worker launched reading on [%s]' % read_on)
+
+      def receive(self, callback):
+	  """
+	  Receive on the read channel, passing the gived callback to the
+	  basic_consume method.
+	  """
+	  self.__channel.basic_consume(callback, queue = self.__read_on)
+	  self.__channel.start_consuming()
+
+      def send(self, send_on, request):
+	  """
+	  Send on a specified channel, passing the gived callback to the
+	  basic_consume method.
+	  """
+          self.__channel.basic_publish(exchange='',
+				       routing_key = send_on,
+				       body=request)
 
       def __del__(self):
 	  self.__connection.close()
-
-if __name__ == '__main__':
-    from time import sleep
-    from sys import argv
-
-    def handle_receiving(ch, method, properties, body):
-	print " [%s]\n[%s]\n[%s]\nReceived [%r]" % (ch, method, properties, body,)
-	n = 0
-	while n < 10:
-	  sleep(1)
-	  print n
-	  n += 1# FIXME : debug
-	ch.basic_ack(delivery_tag = method.delivery_tag)
-
-    Amqp(handle_receiving, 'crawling')
